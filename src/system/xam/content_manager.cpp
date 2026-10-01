@@ -19,6 +19,7 @@
 #include <rex/filesystem.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/devices/stfs_container_device.h>
+#include <rex/logging.h>
 #include <rex/string.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xam/content_device.h>
@@ -46,6 +47,9 @@ ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view
   content_data_ = data;
 
   auto fs = kernel_state_->file_system();
+  REXLOG_INFO("ContentPackage: root='{}' host='{}' [{}]", device_path_,
+              rex::path_to_utf8(package_path),
+              std::filesystem::exists(package_path) ? "exists" : "MISSING");
   auto device =
       std::make_unique<rex::filesystem::HostPathDevice>(device_path_, package_path, false);
   device->Initialize();

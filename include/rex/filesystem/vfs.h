@@ -57,3 +57,23 @@ class VirtualFileSystem {
 };
 
 }  // namespace rex::filesystem
+
+// Skate 3 world-district tracking (PASS 40). The guest streams the active
+// district's world chunks through VirtualFileSystem::OpenFile; chunk paths
+// embed the DIST_<Name> archive/directory name (the same identifier the
+// worldDIST_<Name>.big archives use). The tracker records the LAST chunk
+// path opened — a cheap unconditional substring scan per open, no I/O.
+// The app (skate3::coord_dump) reads it for the OTS candidate capture:
+// raw x/y/z coordinates alone cannot identify the district (the three
+// districts' authored volume boxes overlap by hundreds of meters —
+// analysis/big/ots_all_geometry.md).
+namespace rex::filesystem::dist_track {
+
+// Called by VirtualFileSystem::OpenFile (not app-facing).
+void NoteOpenedPath(std::string_view path);
+// The last opened chunk's DIST_<Name> token ("" = none seen this session).
+std::string LastDistrict();
+// Seconds since that token was seen (large = stale).
+double LastDistrictAgeS();
+
+}  // namespace rex::filesystem::dist_track

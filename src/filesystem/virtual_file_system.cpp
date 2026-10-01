@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -43,6 +44,12 @@ REXCVAR_DEFINE_INT32(filesystem_debug_log_team_profile_background_remaining, 0, 
 
 REXCVAR_DEFINE_BOOL(filesystem_debug_log_chan_center_stream_files, false, "Filesystem",
                     "Log focused Chan Center world chunk file opens to disk")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
+
+REXCVAR_DEFINE_BOOL(filesystem_debug_log_base_big_opens, false, "Filesystem",
+                    "Log every VFS resolve of the base big paths "
+                    "(db.big/miscboot.big/missions.big) with the device and result")
     .lifecycle(rex::cvar::Lifecycle::kHotReload)
     .debug_only();
 
@@ -156,6 +163,25 @@ bool LooksLikeTeamProfileBackgroundPath(std::string_view path) {
   std::transform(lower.begin(), lower.end(), lower.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return lower.find("team_profile_background_0") != std::string::npos;
+}
+
+// PASS 36: targeted base-big resolve logging. The full-trace level floods
+// (GPU noise rotates the log within seconds), so the base big opens get
+// their own cvar-gated INFO line: path (as the guest wrote it), the
+// symlink-resolved form, the device served, and the entry result.
+bool ConsumeBaseBigOpenLog(const std::string_view path) {
+  if (!REXCVAR_GET(filesystem_debug_log_base_big_opens)) {
+    return false;
+  }
+  std::string lower(path);
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  for (const char* needle : {"db.big", "miscboot.big", "missions.big"}) {
+    if (lower.find(needle) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool ConsumeFeAssetLogBudget() {
@@ -302,13 +328,20 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
       REXFS_WARN("VFS: entry not found for '{}' (via symlink '{}') on device '{}'", path,
                  normalized_path, device->mount_path());
     } else {
-      REXFS_WARN("VFS: entry not found for '{}' on device '{}'", path, device->mount_path());
+      REXFS_WARN("VFS: entry not found for '{}' on device '{}'", path,
+                 device->mount_path());
     }
+  }
+
+  if (ConsumeBaseBigOpenLog(path)) {
+    REXFS_INFO(
+        "VFS base-big resolve: guest='{}' resolved='{}' device='{}' -> {}",
+        path, normalized_path, device->mount_path(),
+        entry ? "FOUND" : "NOT-FOUND");
   }
 
   return entry;
 }
-
 Entry* VirtualFileSystem::CreatePath(const std::string_view path, uint32_t attributes) {
   // Create all required directories recursively.
   auto path_parts = rex::string::utf8_split_path(path);
@@ -352,6 +385,9 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
                                      FileDisposition creation_disposition, uint32_t desired_access,
                                      bool is_directory, bool is_non_directory, File** out_file,
                                      FileAction* out_action) {
+  // PASS 40 world-district tracking: record the last chunk path's
+  // DIST_<Name> token (cheap substring scan, no I/O).
+  dist_track::NoteOpenedPath(path);
   // TODO(gibbed): should 'is_directory' remain as a bool or should it be
   // flipped to a generic FileAttributeFlags?
 
@@ -371,8 +407,29 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
   Entry* parent_entry = nullptr;
   Entry* entry = nullptr;
 
+  // File-level symlink pre-check: a symlink registered for a FULL file path
+  // (e.g. the Skate 3 custom-big overrides) must win over the parent+child
+  // lookup below, because that lookup resolves through the parent device's
+  // cached directory and would return the real (non-overridden) file. Only
+  // applies to absolute opens (no root handle); root-relative opens resolve
+  // inside the root entry's own tree as before.
+  if (!root_entry) {
+    std::string symlink_resolved;
+    if (ResolveSymbolicLink(path, symlink_resolved) && symlink_resolved != path) {
+      entry = ResolvePath(symlink_resolved);
+      if (entry) {
+        if (ConsumeBaseBigOpenLog(path)) {
+          REXFS_INFO(
+              "VFS base-big resolve: guest='{}' symlink='{}' device='{}' -> FOUND",
+              path, symlink_resolved, entry->device() ? entry->device()->mount_path() : "?");
+        }
+        parent_entry = entry->parent();
+      }
+    }
+  }
+
   auto base_path = rex::string::utf8_find_base_guest_path(path);
-  if (!base_path.empty()) {
+  if (!base_path.empty() && !entry) {
     parent_entry = !root_entry ? ResolvePath(base_path) : root_entry->ResolvePath(base_path);
     if (!parent_entry) {
       *out_action = FileAction::kDoesNotExist;
@@ -542,3 +599,62 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
 }
 
 }  // namespace rex::filesystem
+
+namespace rex::filesystem::dist_track {
+namespace {
+
+std::mutex g_dist_mu;
+std::string g_last_district;
+uint64_t g_last_district_ns = 0;
+
+}  // namespace
+
+void NoteOpenedPath(std::string_view path) {
+  // Chunk paths embed the DIST_<Name> archive/directory token (e.g.
+  // '...\DIST_University\cSim_150_-350_high...'; worldDIST_<Name>.big is the
+  // same identifier). Record the last one; empty tokens ignored.
+  const char* p = path.data();
+  const size_t n = path.size();
+  if (n < 5) {
+    return;
+  }
+  for (size_t i = 0; i + 5 <= n; ++i) {
+    if (p[i] == 'D' && p[i + 1] == 'I' && p[i + 2] == 'S' && p[i + 3] == 'T' &&
+        p[i + 4] == '_') {
+      size_t j = i + 5;
+      while (j < n && ((p[j] >= 'A' && p[j] <= 'Z') || p[j] == '_')) {
+        ++j;
+      }
+      // Strip the trailing '_' of a separator like DIST_University\ or a
+      // chunk prefix 'DIST_University_' (chunk paths often continue with
+      // lowercase/underscore context that is not part of the archive name).
+      while (j > i + 5 && p[j - 1] == '_') {
+        --j;
+      }
+      std::lock_guard<std::mutex> lock(g_dist_mu);
+      g_last_district.assign(p + i + 5, p + j);
+      g_last_district_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now().time_since_epoch())
+                               .count();
+      return;
+    }
+  }
+}
+
+std::string LastDistrict() {
+  std::lock_guard<std::mutex> lock(g_dist_mu);
+  return g_last_district;
+}
+
+double LastDistrictAgeS() {
+  std::lock_guard<std::mutex> lock(g_dist_mu);
+  if (g_last_district_ns == 0) {
+    return -1.0;
+  }
+  const uint64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+  return double(now - g_last_district_ns) * 1e-9;
+}
+
+}  // namespace rex::filesystem::dist_track

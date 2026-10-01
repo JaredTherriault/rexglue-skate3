@@ -242,6 +242,12 @@ std::vector<std::string_view> GetSimpleSettingsCvars() {
   if (HasCvar("skate3_guest_fps_cap")) {
     cvars.push_back("skate3_guest_fps_cap");
   }
+  if (HasCvar("skate3_show_coords")) {
+    cvars.push_back("skate3_show_coords");
+  }
+  if (HasCvar("skate3_coord_capture")) {
+    cvars.push_back("skate3_coord_capture");
+  }
   if (HasCvar("skate3_guest_fps_cap_auto")) {
     cvars.push_back("skate3_guest_fps_cap_auto");
   }
@@ -1050,6 +1056,10 @@ void SimpleSettingsDialog::LoadSettingsFromCvars() {
   mode_indicator_ = HasCvar("skate3_native_render_mode_indicator") &&
                     rex::cvar::Query<bool>("skate3_native_render_mode_indicator");
   fps_counter_ = HasCvar("show_fps_counter") && rex::cvar::Query<bool>("show_fps_counter");
+  show_coords_ =
+      HasCvar("skate3_show_coords") && rex::cvar::Query<bool>("skate3_show_coords");
+  coord_capture_ =
+      HasCvar("skate3_coord_capture") && rex::cvar::Query<bool>("skate3_coord_capture");
   audio_mute_ = HasCvar("audio_mute") && rex::cvar::Query<bool>("audio_mute");
   rumble_ = HasCvar("hid_rumble_enabled") && rex::cvar::Query<bool>("hid_rumble_enabled");
   mnk_sensitivity_ = HasCvar("mnk_sensitivity")
@@ -1079,7 +1089,11 @@ bool SimpleSettingsDialog::HasSettingsChanges() const {
          vsync_ != rex::cvar::Query<bool>("vsync") ||
          tearing_ != TearingFromCvar() ||
          mnk_mode_ != rex::cvar::Query<bool>("mnk_mode") ||
-         mnk_capture_mouse_ != rex::cvar::Query<bool>("mnk_capture_mouse");
+         mnk_capture_mouse_ != rex::cvar::Query<bool>("mnk_capture_mouse") ||
+         (HasCvar("skate3_show_coords") &&
+          show_coords_ != rex::cvar::Query<bool>("skate3_show_coords")) ||
+         (HasCvar("skate3_coord_capture") &&
+          coord_capture_ != rex::cvar::Query<bool>("skate3_coord_capture"));
 }
 
 void SimpleSettingsDialog::Toggle() {
@@ -1788,6 +1802,48 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
         row.reset = [this] {
           mode_indicator_ = CvarDefaultBool("skate3_native_render_mode_indicator", false);
           SetBoolCvar("skate3_native_render_mode_indicator", mode_indicator_);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_show_coords")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Player Coordinates";
+        row.desc =
+            "Live player/camera position readout in the top-left corner "
+            "(spot-hunting aid; the F7 hotkey toggles it too). The camera "
+            "row needs the native renderer. Applies immediately.";
+        row.options = {"Off", "On"};
+        row.flag = &show_coords_;
+        row.on_enum_change = [this](int value) {
+          SetBoolCvar("skate3_show_coords", value != 0);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          show_coords_ = CvarDefaultBool("skate3_show_coords", false);
+          SetBoolCvar("skate3_show_coords", show_coords_);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_coord_capture")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "OTS Candidate Capture";
+        row.desc =
+            "Arms the F11 hotkey that appends the skater position + nearest "
+            "anchor to OTS_candidates.json (spot-authoring aid; also armed "
+            "while Player Coordinates is on). Applies immediately.";
+        row.options = {"Off", "On"};
+        row.flag = &coord_capture_;
+        row.on_enum_change = [this](int value) {
+          SetBoolCvar("skate3_coord_capture", value != 0);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          coord_capture_ = CvarDefaultBool("skate3_coord_capture", false);
+          SetBoolCvar("skate3_coord_capture", coord_capture_);
           SaveSimpleSettingsConfig(config_path_);
         };
         rows.push_back(std::move(row));

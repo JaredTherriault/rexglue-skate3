@@ -126,6 +126,8 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   int stream_probe_index_ = 0;
   bool mode_indicator_ = true;
   bool fps_counter_ = false;
+  bool show_coords_ = false;
+  bool coord_capture_ = false;
   bool audio_mute_ = false;
   bool rumble_ = true;
   float mnk_sensitivity_ = 1.0f;
