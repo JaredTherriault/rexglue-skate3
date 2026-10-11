@@ -148,10 +148,11 @@ struct CategoryInfo {
   const char* name;
   const char* desc;
 };
-constexpr std::array<CategoryInfo, 5> kCategories = {{
+constexpr std::array<CategoryInfo, 6> kCategories = {{
     {"Video", "Display, resolution, framerate and renderer quality settings."},
     {"Controls", "Controller, mouse and keyboard input settings."},
     {"Audio", "Sound output settings."},
+    {"Mods", "Manage and toggle discovered challenge and content mods."},
     {"Profile", "Local player profile and sign-in."},
     {"System", "Game language, pending changes and closing the settings."},
 }};
@@ -981,7 +982,9 @@ SimpleSettingsDialog::SimpleSettingsDialog(ImGuiDrawer* drawer, std::filesystem:
                                            CloseSettingsCallback close_settings,
                                            CloseGameCallback close_game,
                                            RestartGameCallback restart_game,
-                                           PollGamepadCallback poll_gamepad)
+                                           PollGamepadCallback poll_gamepad,
+                                           LoadModsCallback load_mods,
+                                           SaveModsCallback save_mods)
     : ImGuiDialog(drawer),
       config_path_(std::move(config_path)),
       load_profiles_(std::move(load_profiles)),
@@ -989,8 +992,11 @@ SimpleSettingsDialog::SimpleSettingsDialog(ImGuiDrawer* drawer, std::filesystem:
       close_settings_(std::move(close_settings)),
       close_game_(std::move(close_game)),
       restart_game_(std::move(restart_game)),
-      poll_gamepad_(std::move(poll_gamepad)) {
+      poll_gamepad_(std::move(poll_gamepad)),
+      load_mods_(std::move(load_mods)),
+      save_mods_(std::move(save_mods)) {
   ReloadProfiles();
+  ReloadMods();
   LoadSettingsFromCvars();
   SetDrawActive(false);
 }
@@ -1001,6 +1007,7 @@ void SimpleSettingsDialog::Show() {
   visible_ = true;
   SetDrawActive(true);
   ReloadProfiles();
+  ReloadMods();
   LoadSettingsFromCvars();
   zone_ = FocusZone::kRail;
   rail_sel_ = category_;
@@ -1071,7 +1078,8 @@ void SimpleSettingsDialog::LoadSettingsFromCvars() {
 }
 
 bool SimpleSettingsDialog::HasSettingsChanges() const {
-  return (HasGraphicsApiChoice() && graphics_api_index_ != GraphicsApiIndexFromCvar()) ||
+  return HasModChanges() ||
+         (HasGraphicsApiChoice() && graphics_api_index_ != GraphicsApiIndexFromCvar()) ||
          device_index_ != DeviceIndexFromCvar(device_list_) ||
          resolution_scale_index_ != ResolutionIndexFromCvar() ||
          frame_cap_index_ != FrameCapIndexFromCvar() ||
@@ -1256,8 +1264,46 @@ void SimpleSettingsDialog::SaveProfile() {
   ReloadProfiles();
 }
 
+void SimpleSettingsDialog::ReloadMods() {
+  if (load_mods_) {
+    mods_ = load_mods_();
+  } else {
+    mods_.clear();
+  }
+  staged_mod_states_.resize(mods_.size());
+  for (size_t i = 0; i < mods_.size(); ++i) {
+    staged_mod_states_[i] = mods_[i].enabled ? 1 : 0;
+  }
+}
+
+void SimpleSettingsDialog::SaveMods() {
+  if (!save_mods_) {
+    return;
+  }
+  for (size_t i = 0; i < mods_.size(); ++i) {
+    if (i < staged_mod_states_.size()) {
+      mods_[i].enabled = (staged_mod_states_[i] == 1);
+    }
+  }
+  save_mods_(mods_);
+}
+
+bool SimpleSettingsDialog::HasModChanges() const {
+  if (mods_.size() != staged_mod_states_.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < mods_.size(); ++i) {
+    const int current = mods_[i].enabled ? 1 : 0;
+    if (staged_mod_states_[i] != current) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void SimpleSettingsDialog::ApplyAndRestart() {
   SaveVideo();
+  SaveMods();
   if (restart_game_) {
     restart_game_();
   }
@@ -2022,7 +2068,58 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
       }
       break;
     }
-    case 3: {  // Profile
+    case 3: {  // Mods
+      header("Discovered Mods");
+      if (mods_.empty()) {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "No Mods Discovered";
+        row.desc =
+            "No custom challenge packs found in custom_packs/. Place mod folders with "
+            "pack.json into custom_packs/.";
+        row.enabled = false;
+        rows.push_back(std::move(row));
+      } else {
+        for (size_t i = 0; i < mods_.size(); ++i) {
+          RowSpec row;
+          row.kind = RowSpec::kEnum;
+          row.label = mods_[i].name.c_str();
+          row.desc = mods_[i].description.c_str();
+          row.options = {"Disabled", "Enabled"};
+          row.index = &staged_mod_states_[i];
+          row.reset = [this, i] {
+            if (i < mods_.size() && i < staged_mod_states_.size()) {
+              staged_mod_states_[i] = mods_[i].enabled ? 1 : 0;
+            }
+          };
+          rows.push_back(std::move(row));
+        }
+      }
+      header("Session");
+      const bool mod_pending = HasModChanges();
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "Apply & Restart";
+        row.desc = mod_pending
+                       ? "Save the pending mod changes and restart the game to apply them."
+                       : "Mod changes require a restart. Adjust mod toggles above, then apply here.";
+        row.enabled = mod_pending;
+        row.action = [this] { ApplyAndRestart(); };
+        rows.push_back(std::move(row));
+      }
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "Revert Changes";
+        row.desc = "Discard the pending mod changes and go back to the current settings.";
+        row.enabled = mod_pending;
+        row.action = [this] { ReloadMods(); };
+        rows.push_back(std::move(row));
+      }
+      break;
+    }
+    case 4: {  // Profile
       header("Local Profile");
       {
         RowSpec row;
@@ -2069,7 +2166,7 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
       }
       break;
     }
-    case 4: {  // System
+    case 5: {  // System
       if (HasCvar("user_language")) {
         RowSpec row;
         row.kind = RowSpec::kEnum;

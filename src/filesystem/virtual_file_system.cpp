@@ -278,6 +278,10 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path, std::st
     // Found symlink!
     auto target_path = (*it).second;
     auto relative_path = result.substr((*it).first.size());
+    if (!relative_path.empty() && (relative_path.front() == '\\' || relative_path.front() == '/') &&
+        !target_path.empty() && (target_path.back() == '\\' || target_path.back() == '/')) {
+      relative_path.erase(0, 1);
+    }
     result = target_path + relative_path;
     was_resolved = true;
   }
@@ -428,30 +432,32 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
     }
   }
 
-  auto base_path = rex::string::utf8_find_base_guest_path(path);
-  if (!base_path.empty() && !entry) {
-    parent_entry = !root_entry ? ResolvePath(base_path) : root_entry->ResolvePath(base_path);
-    if (!parent_entry) {
-      *out_action = FileAction::kDoesNotExist;
-      LogSkate3ChanCenterStreamFileOpen("missing-parent", path, {}, X_STATUS_NO_SUCH_FILE,
-                                        static_cast<uint32_t>(*out_action), desired_access,
-                                        static_cast<uint32_t>(creation_disposition));
-      return X_STATUS_NO_SUCH_FILE;
-    }
-
-    auto file_name = rex::string::utf8_find_name_from_guest_path(path);
-    entry = parent_entry->GetChild(file_name);
-    if (!entry && !root_entry) {
-      // Some virtual overlays are registered for a full path that doesn't exist
-      // under the real parent device. Resolve the full path too so those
-      // symlinks can satisfy opens like d:\data\scene\.
-      entry = ResolvePath(path);
-      if (entry) {
-        parent_entry = entry->parent();
+  if (!entry) {
+    auto base_path = rex::string::utf8_find_base_guest_path(path);
+    if (!base_path.empty()) {
+      parent_entry = !root_entry ? ResolvePath(base_path) : root_entry->ResolvePath(base_path);
+      if (!parent_entry) {
+        *out_action = FileAction::kDoesNotExist;
+        LogSkate3ChanCenterStreamFileOpen("missing-parent", path, {}, X_STATUS_NO_SUCH_FILE,
+                                          static_cast<uint32_t>(*out_action), desired_access,
+                                          static_cast<uint32_t>(creation_disposition));
+        return X_STATUS_NO_SUCH_FILE;
       }
+
+      auto file_name = rex::string::utf8_find_name_from_guest_path(path);
+      entry = parent_entry->GetChild(file_name);
+      if (!entry && !root_entry) {
+        // Some virtual overlays are registered for a full path that doesn't exist
+        // under the real parent device. Resolve the full path too so those
+        // symlinks can satisfy opens like d:\data\scene\.
+        entry = ResolvePath(path);
+        if (entry) {
+          parent_entry = entry->parent();
+        }
+      }
+    } else {
+      entry = !root_entry ? ResolvePath(path) : root_entry->GetChild(path);
     }
-  } else {
-    entry = !root_entry ? ResolvePath(path) : root_entry->GetChild(path);
   }
 
   if (entry) {

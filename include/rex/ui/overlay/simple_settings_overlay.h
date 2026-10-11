@@ -39,11 +39,21 @@ struct SimpleSettingsGamepad {
   int16_t thumb_ly = 0;
 };
 
+struct SimpleModInfo {
+  std::string id;
+  std::string name;
+  std::string description;
+  std::string version;
+  bool enabled = true;
+};
+
 class SimpleSettingsDialog final : public ImGuiDialog {
  public:
   using LoadProfilesCallback = std::function<SimpleProfileState()>;
   using SaveProfileCallback =
       std::function<void(int selected_index, std::string gamertag, bool signed_in)>;
+  using LoadModsCallback = std::function<std::vector<SimpleModInfo>()>;
+  using SaveModsCallback = std::function<void(const std::vector<SimpleModInfo>&)>;
   using CloseSettingsCallback = std::function<void()>;
   using CloseGameCallback = std::function<void()>;
   using RestartGameCallback = std::function<void()>;
@@ -53,7 +63,9 @@ class SimpleSettingsDialog final : public ImGuiDialog {
                        LoadProfilesCallback load_profiles, SaveProfileCallback save_profile,
                        CloseSettingsCallback close_settings, CloseGameCallback close_game,
                        RestartGameCallback restart_game,
-                       PollGamepadCallback poll_gamepad = nullptr);
+                       PollGamepadCallback poll_gamepad = nullptr,
+                       LoadModsCallback load_mods = nullptr,
+                       SaveModsCallback save_mods = nullptr);
   ~SimpleSettingsDialog();
 
   void Show();
@@ -77,8 +89,11 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   void LoadSettingsFromCvars();
   bool HasSettingsChanges() const;
   void ReloadProfiles();
+  void ReloadMods();
   void SaveVideo();
   void SaveProfile();
+  void SaveMods();
+  bool HasModChanges() const;
   void ApplyAndRestart();
 
   void BuildRows(std::vector<RowSpec>& rows, int category);
@@ -91,7 +106,11 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   CloseGameCallback close_game_;
   RestartGameCallback restart_game_;
   PollGamepadCallback poll_gamepad_;
+  LoadModsCallback load_mods_;
+  SaveModsCallback save_mods_;
   SimpleProfileState profiles_;
+  std::vector<SimpleModInfo> mods_;
+  std::vector<int> staged_mod_states_;
   bool visible_ = false;
 
   // Staged setting values (committed by SaveVideo / SaveProfile).

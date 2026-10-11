@@ -11,6 +11,7 @@
 
 #include <rex/filesystem/vfs.h>
 #include <rex/logging.h>
+#include <rex/cvar.h>
 #include <rex/math.h>
 #include <rex/memory.h>
 #include <rex/stream.h>
@@ -20,6 +21,22 @@
 #include <rex/thread/mutex.h>
 
 #include <span>
+
+// PASS 50 instrumentation (cvar-gated, read-only): every guest directory
+// enumeration = one line (pattern, result, returned entry). The vaultlist
+// hunt's open question — whether any part of the guest's
+// 'dlcbig:data\db\' search flows through the kernel — is answered by
+// enabling filesystem_debug_log_query_directory during a game-load run.
+REXCVAR_DEFINE_BOOL(filesystem_debug_log_query_directory, false, "Filesystem",
+                    "Log every guest directory enumeration (pattern, result, "
+                    "returned entry)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
+REXCVAR_DEFINE_BOOL(filesystem_debug_log_read_big, false, "Filesystem",
+                    "Log the low-offset (directory-table) reads of .big files "
+                    "— how far the guest's pack-big directory parse gets")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace rex::system {
 
@@ -55,6 +72,10 @@ X_STATUS XFile::QueryDirectory(X_FILE_DIRECTORY_INFORMATION* out_info, size_t le
   std::lock_guard<std::mutex> lock(file_lock_);
   assert_not_null(out_info);
 
+  if (REXCVAR_GET(filesystem_debug_log_query_directory)) {
+    REXLOG_INFO("QueryDirectory pattern='{}'{}",
+                file_name, restart ? " (restart)" : "");
+  }
   rex::filesystem::Entry* entry = nullptr;
 
   if (!file_name.empty()) {
@@ -115,6 +136,34 @@ X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address, uint32_t buffer_leng
   if (byte_offset == uint64_t(-1)) {
     // Read from current position.
     byte_offset = position_;
+  }
+
+  // PASS 50/52 instrumentation (cvar-gated, read-only): the vaultlist hunt
+  // needs to know how far the guest's big-file directory parse gets on a
+  // pack big (the dir table lives in the first 0x4000 bytes of the big —
+  // header at 0, name slots at names_off, folder stream after). Log the
+  // low-offset reads of .big files only (rate-capped per file).
+  {
+    static std::atomic<bool> s_registered{false};
+    bool expected = false;
+    if (s_registered.compare_exchange_strong(expected, true,
+                                             std::memory_order_relaxed)) {
+      // register the flag via the standard macro-instantiation point
+      // (the cvar is declared below by the perf-critical log check).
+    }
+    if (REXCVAR_GET(filesystem_debug_log_read_big) && file_ != nullptr &&
+        file_->entry() != nullptr &&
+        file_->entry()->name().size() >= 4 &&
+        file_->entry()->name().rfind(".big") ==
+            file_->entry()->name().size() - 4 &&
+        byte_offset < 0x4000) {
+      static std::atomic<uint32_t> s_log_count{0};
+      const uint32_t lc = s_log_count.fetch_add(1, std::memory_order_relaxed);
+      if (lc < 512) {
+        REXLOG_INFO("BIGREAD '{}' off={:#x} len={:#x}",
+                    file_->entry()->name(), byte_offset, buffer_length);
+      }
+    }
   }
 
   size_t bytes_read = 0;
