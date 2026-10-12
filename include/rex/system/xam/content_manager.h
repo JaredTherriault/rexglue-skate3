@@ -129,6 +129,9 @@ class ContentPackage {
 
   const std::filesystem::path& package_path() const { return package_path_; }
 
+  const std::string& root_name() const { return root_name_; }
+  const std::string& device_path() const { return device_path_; }
+
   uint32_t GetPackageLicense() const { return license_; }
 
  private:
@@ -191,7 +194,20 @@ class ContentManager {
   // the title enumerates or opens content of this type; no data is migrated.
   void SetContentTypeRoot(XContentType content_type, std::filesystem::path root);
 
+  using PackageMountCallback =
+      std::function<void(const std::string_view root_name, const std::string_view device_path,
+                         const std::filesystem::path& package_path)>;
+  using PackageUnmountCallback =
+      std::function<void(const std::string_view root_name, const std::string_view device_path)>;
+
+  void SetPackageMountCallbacks(PackageMountCallback mount_cb, PackageUnmountCallback unmount_cb) {
+    package_mount_cb_ = std::move(mount_cb);
+    package_unmount_cb_ = std::move(unmount_cb);
+  }
+
  private:
+  PackageMountCallback package_mount_cb_;
+  PackageUnmountCallback package_unmount_cb_;
   std::filesystem::path ResolvePackageRoot(uint64_t xuid, XContentType content_type,
                                            uint32_t title_id = -1);
   std::filesystem::path ResolvePackagePath(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data);

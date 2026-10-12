@@ -202,6 +202,9 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
     return nullptr;
   }
   auto package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path);
+  if (package_mount_cb_) {
+    package_mount_cb_(root_name, package->device_path(), package_path);
+  }
   return package;
 }
 
@@ -503,6 +506,9 @@ ContentPackage* ContentManager::DetachPackage(
                        string::string_key_case::Hash>::iterator it) {
   CloseOpenedFilesFromContent(it->first.view());
   ContentPackage* package = it->second;
+  if (package_unmount_cb_) {
+    package_unmount_cb_(package->root_name(), package->device_path());
+  }
   open_packages_.erase(it);
   return package;
 }
