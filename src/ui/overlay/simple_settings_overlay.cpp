@@ -2117,6 +2117,21 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
         row.action = [this] { ReloadMods(); };
         rows.push_back(std::move(row));
       }
+      header("Tools");
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "Challenge Editor (Freecam)";
+        row.desc = "Enter freecam drone flight to place and edit Own-The-Spot challenges.";
+        row.enabled = (open_challenge_editor_ != nullptr);
+        row.action = [this] {
+          Hide();
+          if (open_challenge_editor_) {
+            open_challenge_editor_();
+          }
+        };
+        rows.push_back(std::move(row));
+      }
       break;
     }
     case 4: {  // Profile

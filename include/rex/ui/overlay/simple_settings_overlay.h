@@ -58,6 +58,7 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   using CloseGameCallback = std::function<void()>;
   using RestartGameCallback = std::function<void()>;
   using PollGamepadCallback = std::function<SimpleSettingsGamepad()>;
+  using OpenChallengeEditorCallback = std::function<void()>;
 
   SimpleSettingsDialog(ImGuiDrawer* drawer, std::filesystem::path config_path,
                        LoadProfilesCallback load_profiles, SaveProfileCallback save_profile,
@@ -75,6 +76,9 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   // -> closed. The Escape keybind routes here so Escape backs out level by
   // level instead of instantly closing.
   void NavigateBack();
+  void SetOpenChallengeEditorCallback(OpenChallengeEditorCallback cb) {
+    open_challenge_editor_ = std::move(cb);
+  }
   bool visible() const { return visible_; }
 
  protected:
@@ -108,6 +112,7 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   PollGamepadCallback poll_gamepad_;
   LoadModsCallback load_mods_;
   SaveModsCallback save_mods_;
+  OpenChallengeEditorCallback open_challenge_editor_;
   SimpleProfileState profiles_;
   std::vector<SimpleModInfo> mods_;
   std::vector<int> staged_mod_states_;
