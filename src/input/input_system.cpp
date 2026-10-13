@@ -212,6 +212,19 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
   }
   menu_chord_down_ = menu_chord_down;
 
+  // Mask out menu chord buttons so the host settings chord never leaks into guest gameplay
+  if (menu_chord_buttons != 0) {
+    if (menu_chord_down || menu_chord_down_) {
+      merged.gamepad.buttons =
+          static_cast<uint16_t>(merged.gamepad.buttons & ~menu_chord_buttons);
+    } else if ((merged.gamepad.buttons & X_INPUT_GAMEPAD_RIGHT_SHOULDER) &&
+               (menu_chord_buttons & X_INPUT_GAMEPAD_RIGHT_SHOULDER) &&
+               (menu_chord_buttons & X_INPUT_GAMEPAD_START)) {
+      merged.gamepad.buttons =
+          static_cast<uint16_t>(merged.gamepad.buttons & ~X_INPUT_GAMEPAD_START);
+    }
+  }
+
   if (active_callback_ && !active_callback_()) {
     std::memset(&merged.gamepad, 0, sizeof(merged.gamepad));
   }
