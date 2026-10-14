@@ -1271,7 +1271,18 @@ void SimpleSettingsDialog::ReloadMods() {
     mods_.clear();
   }
   staged_mod_states_.resize(mods_.size());
+  player_model_mod_indices_.clear();
+  player_model_index_ = 0;
   for (size_t i = 0; i < mods_.size(); ++i) {
+    if (mods_[i].is_player_model) {
+      const int option_idx = static_cast<int>(player_model_mod_indices_.size()) + 1;
+      player_model_mod_indices_.push_back(i);
+      if (mods_[i].enabled && player_model_index_ == 0) {
+        player_model_index_ = option_idx;
+      } else {
+        mods_[i].enabled = false;
+      }
+    }
     staged_mod_states_[i] = mods_[i].enabled ? 1 : 0;
   }
 }
@@ -2069,31 +2080,102 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
       break;
     }
     case 3: {  // Mods
-      header("Discovered Mods");
-      if (mods_.empty()) {
+      if (!player_model_mod_indices_.empty()) {
+        header("Player Character");
         RowSpec row;
-        row.kind = RowSpec::kAction;
-        row.label = "No Mods Discovered";
-        row.desc =
-            "No custom challenge packs found in custom_packs/. Place mod folders with "
-            "pack.json into custom_packs/.";
-        row.enabled = false;
+        row.kind = RowSpec::kEnum;
+        row.label = "Player Character Replacement";
+        if (player_model_index_ > 0 &&
+            static_cast<size_t>(player_model_index_ - 1) < player_model_mod_indices_.size()) {
+          const size_t active_idx =
+              player_model_mod_indices_[static_cast<size_t>(player_model_index_ - 1)];
+          row.desc = mods_[active_idx].description.c_str();
+        } else {
+          row.desc =
+              "Use the game's default Create-A-Skater model. Select a character "
+              "replacement mod to switch your skater live in-game.";
+        }
+        row.options.push_back("Default (CAS)");
+        for (size_t mod_idx : player_model_mod_indices_) {
+          row.options.push_back(mods_[mod_idx].name.c_str());
+        }
+        row.index = &player_model_index_;
+        row.on_enum_change = [this](int value) {
+          player_model_index_ =
+              std::clamp(value, 0, static_cast<int>(player_model_mod_indices_.size()));
+          for (size_t k = 0; k < player_model_mod_indices_.size(); ++k) {
+            const size_t mod_idx = player_model_mod_indices_[k];
+            const bool active = (static_cast<int>(k) + 1 == player_model_index_);
+            mods_[mod_idx].enabled = active;
+            if (mod_idx < staged_mod_states_.size()) {
+              staged_mod_states_[mod_idx] = active ? 1 : 0;
+            }
+          }
+          if (save_mods_) {
+            save_mods_(mods_);
+          }
+        };
+        row.reset = [this] {
+          player_model_index_ = 0;
+          for (size_t mod_idx : player_model_mod_indices_) {
+            mods_[mod_idx].enabled = false;
+            if (mod_idx < staged_mod_states_.size()) {
+              staged_mod_states_[mod_idx] = 0;
+            }
+          }
+          if (save_mods_) {
+            save_mods_(mods_);
+          }
+        };
         rows.push_back(std::move(row));
-      } else {
-        for (size_t i = 0; i < mods_.size(); ++i) {
-          RowSpec row;
-          row.kind = RowSpec::kEnum;
-          row.label = mods_[i].name.c_str();
-          row.desc = mods_[i].description.c_str();
-          row.options = {"Disabled", "Enabled"};
-          row.index = &staged_mod_states_[i];
-          row.reset = [this, i] {
+      }
+
+      header("Discovered Mods");
+      bool any_regular_mod = false;
+      for (size_t i = 0; i < mods_.size(); ++i) {
+        if (mods_[i].is_player_model) continue;
+        any_regular_mod = true;
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = mods_[i].name.c_str();
+        row.desc = mods_[i].description.c_str();
+        row.options = {"Disabled", "Enabled"};
+        row.index = &staged_mod_states_[i];
+        if (mods_[i].hot_reload) {
+          row.on_enum_change = [this, i](int value) {
             if (i < mods_.size() && i < staged_mod_states_.size()) {
-              staged_mod_states_[i] = mods_[i].enabled ? 1 : 0;
+              staged_mod_states_[i] = value;
+              mods_[i].enabled = (value == 1);
+              if (save_mods_) {
+                save_mods_(mods_);
+              }
             }
           };
-          rows.push_back(std::move(row));
         }
+        row.reset = [this, i] {
+          if (i < mods_.size() && i < staged_mod_states_.size()) {
+            if (mods_[i].hot_reload) {
+              staged_mod_states_[i] = 1;
+              mods_[i].enabled = true;
+              if (save_mods_) {
+                save_mods_(mods_);
+              }
+            } else {
+              staged_mod_states_[i] = mods_[i].enabled ? 1 : 0;
+            }
+          }
+        };
+        rows.push_back(std::move(row));
+      }
+      if (!any_regular_mod) {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "No Challenge Mods Discovered";
+        row.desc =
+            "No custom challenge packs found in mods/raw/. Place mod folders with "
+            "pack.json into mods/raw/.";
+        row.enabled = false;
+        rows.push_back(std::move(row));
       }
       header("Session");
       const bool mod_pending = HasModChanges();

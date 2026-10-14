@@ -45,6 +45,8 @@ struct SimpleModInfo {
   std::string description;
   std::string version;
   bool enabled = true;
+  bool hot_reload = false;
+  bool is_player_model = false;
 };
 
 class SimpleSettingsDialog final : public ImGuiDialog {
@@ -116,6 +118,8 @@ class SimpleSettingsDialog final : public ImGuiDialog {
   SimpleProfileState profiles_;
   std::vector<SimpleModInfo> mods_;
   std::vector<int> staged_mod_states_;
+  std::vector<size_t> player_model_mod_indices_;
+  int player_model_index_ = 0;
   bool visible_ = false;
 
   // Staged setting values (committed by SaveVideo / SaveProfile).
