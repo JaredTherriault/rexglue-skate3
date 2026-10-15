@@ -54,7 +54,7 @@ constexpr std::array<std::string_view, 7> kCoreSimpleSettingsCvars = {
 // Optional cvars persisted when the host defines them (HasCvar-gated: app
 // cvars like the native-renderer knobs don't exist in every embedder, and
 // backend/platform cvars don't exist in every build).
-constexpr std::array<std::string_view, 24> kOptionalSimpleSettingsCvars = {
+constexpr std::array<std::string_view, 33> kOptionalSimpleSettingsCvars = {
     "skate3_native_render_scene",
     "skate3_native_render_scene_msaa",
     "skate3_native_render_scene_shadows",
@@ -70,6 +70,15 @@ constexpr std::array<std::string_view, 24> kOptionalSimpleSettingsCvars = {
     "skate3_draw_distance_scale",
     "skate3_lod_distance_scale",
     "skate3_draw_distance_stream_probe",
+    "skate3_cheat_no_bails",
+    "skate3_cheat_drop_height",
+    "skate3_cheat_freeze_timer",
+    "skate3_cheat_gravity",
+    "skate3_cheat_pop_height",
+    "skate3_cheat_offboard_jump_height",
+    "skate3_cheat_offboard_jump_speed",
+    "skate3_cheat_onboard_speed",
+    "skate3_cheat_offboard_speed",
     "show_fps_counter",
     "monitor",
     "mnk_sensitivity",
@@ -130,6 +139,16 @@ constexpr std::array<const char*, 4> kMenuChordLabels = {"RB + Start", "LB + RB 
 constexpr std::array<const char*, 5> kMonitorLabels = {"Auto", "Monitor 1", "Monitor 2",
                                                        "Monitor 3", "Monitor 4"};
 
+// Gameplay cheats (live hot-reloadable cvars).
+constexpr std::array<const char*, 5> kCheatDropHeightLabels = {
+    "Normal", "2x", "5x", "10x", "Unlimited"};
+constexpr std::array<const char*, 5> kCheatGravityLabels = {
+    "Moon", "Low", "Normal", "High", "Super High"};
+constexpr std::array<const char*, 5> kCheatPopHeightLabels = {
+    "Normal", "1.5x", "2x", "3x", "5x"};
+constexpr std::array<const char*, 5> kCheatSpeedLabels = {
+    "Slow (0.5x)", "Normal", "Fast (1.5x)", "2x", "3x"};
+
 // X_INPUT_GAMEPAD_* button bits, mirrored locally to keep the UI overlay
 // decoupled from the kernel input headers.
 constexpr uint16_t kPadDpadUp = 0x0001;
@@ -148,11 +167,13 @@ struct CategoryInfo {
   const char* name;
   const char* desc;
 };
-constexpr std::array<CategoryInfo, 6> kCategories = {{
+constexpr std::array<CategoryInfo, 8> kCategories = {{
     {"Video", "Display, resolution, framerate and renderer quality settings."},
     {"Controls", "Controller, mouse and keyboard input settings."},
     {"Audio", "Sound output settings."},
+    {"Achievements", "Track career achievements, Gamerscore, and unlock progress."},
     {"Mods", "Manage and toggle discovered challenge and content mods."},
+    {"Cheats", "Live gameplay modifiers for gravity, bails, pop height, speed, and timers."},
     {"Profile", "Local player profile and sign-in."},
     {"System", "Game language, pending changes and closing the settings."},
 }};
@@ -549,6 +570,22 @@ int MenuChordIndexFromCvar(std::string* custom_spec) {
   return static_cast<int>(kMenuChordSpecs.size());
 }
 
+template <size_t N>
+int LabelIndexFromCvar(std::string_view cvar_name,
+                       const std::array<const char*, N>& labels,
+                       int fallback_index) {
+  if (!HasCvar(cvar_name)) {
+    return fallback_index;
+  }
+  const std::string current = rex::cvar::Query<std::string>(cvar_name);
+  for (size_t i = 0; i < N; ++i) {
+    if (current == labels[i]) {
+      return static_cast<int>(i);
+    }
+  }
+  return fallback_index;
+}
+
 // ---- CVar default parsing (Y / R "reset to default") ----------------------
 
 std::optional<std::string> CvarDefault(std::string_view name) {
@@ -740,20 +777,7 @@ void AddTextVCentered(ImDrawList* dl, ImFont* font, float size, float x, float c
 // last line of the paragraph stays ragged-left. Returns the height consumed.
 float AddTextJustified(ImDrawList* dl, ImFont* font, float size, ImVec2 pos, float wrap_w,
                        ImU32 col, const char* text) {
-  std::vector<std::string_view> words;
-  for (const char* p = text; *p;) {
-    while (*p == ' ') {
-      ++p;
-    }
-    const char* start = p;
-    while (*p && *p != ' ') {
-      ++p;
-    }
-    if (p > start) {
-      words.emplace_back(start, size_t(p - start));
-    }
-  }
-  if (words.empty()) {
+  if (!text || !*text) {
     return 0.0f;
   }
   const float space_w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, " ").x;
@@ -761,38 +785,63 @@ float AddTextJustified(ImDrawList* dl, ImFont* font, float size, ImVec2 pos, flo
     return font->CalcTextSizeA(size, FLT_MAX, 0.0f, w.data(), w.data() + w.size()).x;
   };
   float y = pos.y;
-  size_t i = 0;
-  while (i < words.size()) {
-    float line_w = word_w(words[i]);
-    size_t j = i + 1;
-    while (j < words.size()) {
-      const float w = word_w(words[j]);
-      if (line_w + space_w + w > wrap_w) {
-        break;
-      }
-      line_w += space_w + w;
-      ++j;
+  const char* p = text;
+  while (*p) {
+    const char* line_end = p;
+    while (*line_end && *line_end != '\n') {
+      ++line_end;
     }
-    const bool last_line = j == words.size();
-    float gap = space_w;
-    if (!last_line && j - i > 1) {
-      const float words_only = line_w - space_w * float(j - i - 1);
-      const float stretched = (wrap_w - words_only) / float(j - i - 1);
-      // Conditional justify: only stretch when the gaps stay modest -
-      // beyond ~1.6x a normal space the stretched line reads worse than a
-      // ragged one (the "big spaces" objection to naive justification).
-      if (stretched <= space_w * 1.6f) {
-        gap = stretched;
+    std::vector<std::string_view> words;
+    for (const char* cur = p; cur < line_end;) {
+      while (cur < line_end && (*cur == ' ' || *cur == '\r')) {
+        ++cur;
+      }
+      const char* start = cur;
+      while (cur < line_end && *cur != ' ' && *cur != '\r') {
+        ++cur;
+      }
+      if (cur > start) {
+        words.emplace_back(start, size_t(cur - start));
       }
     }
-    float x = pos.x;
-    for (size_t k = i; k < j; ++k) {
-      dl->AddText(font, size, ImVec2(Snap(x), Snap(y)), col, words[k].data(),
-                  words[k].data() + words[k].size());
-      x += word_w(words[k]) + gap;
+    if (words.empty()) {
+      y += size;
+    } else {
+      size_t i = 0;
+      while (i < words.size()) {
+        float line_w = word_w(words[i]);
+        size_t j = i + 1;
+        while (j < words.size()) {
+          const float w = word_w(words[j]);
+          if (line_w + space_w + w > wrap_w) {
+            break;
+          }
+          line_w += space_w + w;
+          ++j;
+        }
+        const bool last_line = j == words.size();
+        float gap = space_w;
+        if (!last_line && j - i > 1) {
+          const float words_only = line_w - space_w * float(j - i - 1);
+          const float stretched = (wrap_w - words_only) / float(j - i - 1);
+          // Conditional justify: only stretch when the gaps stay modest -
+          // beyond ~1.6x a normal space the stretched line reads worse than a
+          // ragged one (the "big spaces" objection to naive justification).
+          if (stretched <= space_w * 1.6f) {
+            gap = stretched;
+          }
+        }
+        float x = pos.x;
+        for (size_t k = i; k < j; ++k) {
+          dl->AddText(font, size, ImVec2(Snap(x), Snap(y)), col, words[k].data(),
+                      words[k].data() + words[k].size());
+          x += word_w(words[k]) + gap;
+        }
+        y += size;
+        i = j;
+      }
     }
-    y += size;
-    i = j;
+    p = (*line_end == '\n') ? (line_end + 1) : line_end;
   }
   return y - pos.y;
 }
@@ -938,11 +987,14 @@ struct SimpleSettingsDialog::RowSpec {
   enum Kind { kHeader, kEnum, kSlider, kAction, kText };
   Kind kind = kEnum;
   const char* label = nullptr;
+  std::string label_str;
   const char* desc = nullptr;
   std::string desc_extra;       // dynamic addendum shown under desc
   const char* value_note = nullptr;  // short warning shown in the description
+  std::string value_text;       // optional text shown right-aligned on the row
   bool enabled = true;
   bool danger = false;
+  void* icon_texture = nullptr;
   // kEnum (options step left/right; either index or flag backs the value)
   std::vector<std::string> options;
   int* index = nullptr;
@@ -962,6 +1014,10 @@ struct SimpleSettingsDialog::RowSpec {
   size_t text_buf_size = 0;
   // Reset-to-default handler (Y / R), unset when the row has no default.
   std::function<void()> reset;
+  // Optional progress bar & checklist for achievements.
+  uint32_t progress_current = 0;
+  uint32_t progress_total = 0;
+  std::vector<std::pair<std::string, bool>> checklist;
 };
 
 // Per-frame navigation intents merged from pad and keyboard.
@@ -984,7 +1040,8 @@ SimpleSettingsDialog::SimpleSettingsDialog(ImGuiDrawer* drawer, std::filesystem:
                                            RestartGameCallback restart_game,
                                            PollGamepadCallback poll_gamepad,
                                            LoadModsCallback load_mods,
-                                           SaveModsCallback save_mods)
+                                           SaveModsCallback save_mods,
+                                           LoadAchievementsCallback load_achievements)
     : ImGuiDialog(drawer),
       config_path_(std::move(config_path)),
       load_profiles_(std::move(load_profiles)),
@@ -994,22 +1051,30 @@ SimpleSettingsDialog::SimpleSettingsDialog(ImGuiDrawer* drawer, std::filesystem:
       restart_game_(std::move(restart_game)),
       poll_gamepad_(std::move(poll_gamepad)),
       load_mods_(std::move(load_mods)),
-      save_mods_(std::move(save_mods)) {
+      save_mods_(std::move(save_mods)),
+      load_achievements_(std::move(load_achievements)) {
   ReloadProfiles();
   ReloadMods();
+  ReloadAchievements();
   LoadSettingsFromCvars();
   SetDrawActive(false);
 }
 
 SimpleSettingsDialog::~SimpleSettingsDialog() = default;
 
-void SimpleSettingsDialog::Show() {
+void SimpleSettingsDialog::Show(int initial_category) {
   visible_ = true;
   SetDrawActive(true);
+  confirm_reset_achievements_ = false;
+  confirm_reset_filtered_achievements_ = false;
   ReloadProfiles();
   ReloadMods();
+  ReloadAchievements();
   LoadSettingsFromCvars();
   zone_ = FocusZone::kRail;
+  if (initial_category >= 0 && initial_category < static_cast<int>(kCategories.size())) {
+    category_ = initial_category;
+  }
   rail_sel_ = category_;
   row_index_ = 0;
   content_scroll_ = 0.0f;
@@ -1019,6 +1084,26 @@ void SimpleSettingsDialog::Show() {
   rail_anim_y_ = -1.0f;
   prev_pad_buttons_ = 0xFFFF;  // swallow buttons already held at open
   just_shown_ = true;          // swallow the stale cursor delta too
+}
+
+void SimpleSettingsDialog::SelectCategory(int category) {
+  confirm_reset_achievements_ = false;
+  confirm_reset_filtered_achievements_ = false;
+  if (category >= 0 && category < static_cast<int>(kCategories.size())) {
+    category_ = category;
+    rail_sel_ = category;
+    row_index_ = 0;
+    content_scroll_ = 0.0f;
+    content_scroll_anim_ = 0.0f;
+  }
+}
+
+void SimpleSettingsDialog::ReloadAchievements() {
+  if (load_achievements_) {
+    achievement_data_ = load_achievements_();
+  } else {
+    achievement_data_ = {};
+  }
 }
 
 void SimpleSettingsDialog::LoadSettingsFromCvars() {
@@ -1075,6 +1160,24 @@ void SimpleSettingsDialog::LoadSettingsFromCvars() {
   chord_custom_.clear();
   chord_index_ = HasCvar("menu_chord") ? MenuChordIndexFromCvar(&chord_custom_) : 0;
   input_backend_index_ = HasInputBackendChoice() ? InputBackendIndexFromCvar() : 0;
+  cheat_no_bails_ =
+      HasCvar("skate3_cheat_no_bails") && rex::cvar::Query<bool>("skate3_cheat_no_bails");
+  cheat_drop_height_index_ =
+      LabelIndexFromCvar("skate3_cheat_drop_height", kCheatDropHeightLabels, 0);
+  cheat_freeze_timer_ =
+      HasCvar("skate3_cheat_freeze_timer") && rex::cvar::Query<bool>("skate3_cheat_freeze_timer");
+  cheat_gravity_index_ =
+      LabelIndexFromCvar("skate3_cheat_gravity", kCheatGravityLabels, 2);
+  cheat_pop_height_index_ =
+      LabelIndexFromCvar("skate3_cheat_pop_height", kCheatPopHeightLabels, 0);
+  cheat_offboard_jump_height_index_ =
+      LabelIndexFromCvar("skate3_cheat_offboard_jump_height", kCheatPopHeightLabels, 0);
+  cheat_offboard_jump_speed_index_ =
+      LabelIndexFromCvar("skate3_cheat_offboard_jump_speed", kCheatSpeedLabels, 1);
+  cheat_onboard_speed_index_ =
+      LabelIndexFromCvar("skate3_cheat_onboard_speed", kCheatSpeedLabels, 1);
+  cheat_offboard_speed_index_ =
+      LabelIndexFromCvar("skate3_cheat_offboard_speed", kCheatSpeedLabels, 1);
 }
 
 bool SimpleSettingsDialog::HasSettingsChanges() const {
@@ -1116,6 +1219,8 @@ void SimpleSettingsDialog::Hide() {
   if (!visible_) {
     return;
   }
+  confirm_reset_achievements_ = false;
+  confirm_reset_filtered_achievements_ = false;
   visible_ = false;
   editing_text_ = false;
   SetDrawActive(false);
@@ -1125,6 +1230,8 @@ void SimpleSettingsDialog::Hide() {
 }
 
 void SimpleSettingsDialog::NavigateBack() {
+  confirm_reset_achievements_ = false;
+  confirm_reset_filtered_achievements_ = false;
   if (!visible_) {
     return;
   }
@@ -1326,14 +1433,15 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
 
   // Section bars only SEPARATE groups - a category's first group
   // starts directly with its rows, so a leading header is dropped.
-  auto header = [&rows](const char* label) {
+  auto header = [&rows](std::string_view label) {
     if (rows.empty()) {
       return;
     }
     RowSpec row;
     row.kind = RowSpec::kHeader;
-    row.label = label;
+    row.label_str = std::string(label);
     rows.push_back(std::move(row));
+    rows.back().label = rows.back().label_str.c_str();
   };
 
   switch (category) {
@@ -2079,7 +2187,278 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
       }
       break;
     }
-    case 3: {  // Mods
+    case 3: {  // Achievements
+      std::vector<std::string> category_options = {"All", "Base Game",
+                                                   "Maloof Money Cup NY DLC",
+                                                   "Danny Way's Hawaiian Dream DLC"};
+      for (const auto& item : achievement_data_.items) {
+        if (!item.category.empty() &&
+            std::find(category_options.begin(), category_options.end(), item.category) ==
+                category_options.end()) {
+          category_options.push_back(item.category);
+        }
+      }
+
+      if (achievement_category_filter_ < 0 ||
+          achievement_category_filter_ >= static_cast<int>(category_options.size())) {
+        achievement_category_filter_ = 0;
+      }
+
+      auto matches_category = [this, &category_options](const SimpleAchievementItem& item) {
+        if (achievement_category_filter_ == 0) return true;
+        if (achievement_category_filter_ > 0 &&
+            achievement_category_filter_ < static_cast<int>(category_options.size())) {
+          return item.category == category_options[achievement_category_filter_];
+        }
+        return true;
+      };
+
+      uint32_t total_score = 0;
+      uint32_t unlocked_score = 0;
+      uint32_t total_count = 0;
+      uint32_t unlocked_count = 0;
+      uint32_t total_progress_count = 0;
+
+      for (const auto& item : achievement_data_.items) {
+        if (item.unlocked || item.progress_current > 0) {
+          total_progress_count++;
+        }
+        if (!matches_category(item)) continue;
+        total_score += item.gamerscore;
+        total_count++;
+        if (item.unlocked) {
+          unlocked_score += item.gamerscore;
+          unlocked_count++;
+        }
+      }
+
+      header("Overview");
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = (achievement_category_filter_ == 0) ? "Total Gamerscore" : "Category Gamerscore";
+        row.desc = (achievement_category_filter_ == 0)
+                       ? "Overall Gamerscore accumulated across unlocked achievements."
+                       : "Gamerscore accumulated within the selected category.";
+        row.desc_extra = fmt::format("{}/{} G", unlocked_score, total_score);
+        row.value_text = fmt::format("{} / {} G", unlocked_score, total_score);
+        row.enabled = false;
+        rows.push_back(std::move(row));
+      }
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = (achievement_category_filter_ == 0) ? "Total Progress" : "Category Progress";
+        row.desc = "Achievements unlocked in this career profile.";
+        float pct = total_count > 0 ? (100.0f * unlocked_count / total_count) : 0.0f;
+        row.desc_extra = fmt::format("{}/{} unlocked ({:.1f}%)", unlocked_count, total_count, pct);
+        row.value_text = fmt::format("{} / {} ({:.0f}%)", unlocked_count, total_count, pct);
+        row.enabled = false;
+        rows.push_back(std::move(row));
+      }
+      header("Filter");
+      {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Category";
+        row.desc = "Filter achievements by campaign, DLC, or mod pack.";
+        row.options = category_options;
+        row.index = &achievement_category_filter_;
+        row.on_enum_change = [this](int) {
+          confirm_reset_achievements_ = false;
+          confirm_reset_filtered_achievements_ = false;
+        };
+        rows.push_back(std::move(row));
+      }
+      {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Status";
+        row.desc = "Filter achievements by unlock status.";
+        row.options = {"All", "Unlocked", "Locked"};
+        row.index = &achievement_filter_;
+        row.on_enum_change = [this](int) {
+          confirm_reset_achievements_ = false;
+          confirm_reset_filtered_achievements_ = false;
+        };
+        rows.push_back(std::move(row));
+      }
+
+      std::vector<uint32_t> filtered_ids;
+      uint32_t filtered_progress_count = 0;
+
+      if (achievement_data_.items.empty()) {
+        header("Achievements");
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "No Achievements Found";
+        row.desc = "Unable to load achievement definitions from title database.";
+        row.enabled = false;
+        rows.push_back(std::move(row));
+      } else {
+        size_t total_rendered = 0;
+
+        for (size_t c = 1; c < category_options.size(); ++c) {
+          const std::string& cat_name = category_options[c];
+          if (achievement_category_filter_ != 0 &&
+              achievement_category_filter_ < static_cast<int>(category_options.size()) &&
+              category_options[achievement_category_filter_] != cat_name) {
+            continue;
+          }
+
+          std::vector<const SimpleAchievementItem*> group_items;
+          for (const auto& item : achievement_data_.items) {
+            if (item.category != cat_name) continue;
+            if (achievement_filter_ == 1 && !item.unlocked) continue;
+            if (achievement_filter_ == 2 && item.unlocked) continue;
+            group_items.push_back(&item);
+            filtered_ids.push_back(item.id);
+            if (item.unlocked || item.progress_current > 0) {
+              filtered_progress_count++;
+            }
+          }
+
+          if (!group_items.empty()) {
+            header(cat_name);
+            for (const auto* item_ptr : group_items) {
+              const auto& item = *item_ptr;
+              RowSpec row;
+              row.kind = RowSpec::kAction;
+              if (achievement_icon_cb_ && (!item.is_secret || item.unlocked)) {
+                row.icon_texture = achievement_icon_cb_(item.id);
+              }
+              std::string cat_info;
+              if (!item.category.empty()) {
+                cat_info = fmt::format("Category: {}\n", item.category);
+              }
+
+              if (!item.is_secret || item.unlocked) {
+                row.progress_current = item.progress_current;
+                row.progress_total = item.progress_total;
+                row.checklist = item.checklist;
+              }
+
+              if (item.unlocked) {
+                row.label = item.name.c_str();
+                row.desc = item.description.c_str();
+                if (!item.unlock_time_str.empty()) {
+                  row.desc_extra = fmt::format("{}Unlocked: {}\nPoints: {} G", cat_info,
+                                               item.unlock_time_str, item.gamerscore);
+                } else {
+                  row.desc_extra = fmt::format("{}Points: {} G", cat_info, item.gamerscore);
+                }
+                row.value_text = fmt::format("{} G  [Unlocked]", item.gamerscore);
+              } else if (item.is_secret) {
+                row.label = "Secret Achievement";
+                row.desc = item.unachieved_desc.empty()
+                               ? "Keep playing to unlock this secret achievement."
+                               : item.unachieved_desc.c_str();
+                row.desc_extra = fmt::format("{}Points: {} G", cat_info, item.gamerscore);
+                row.value_text = fmt::format("{} G  [Locked]", item.gamerscore);
+              } else {
+                row.label = item.name.c_str();
+                row.desc = item.description.c_str();
+                row.desc_extra = fmt::format("{}Points: {} G", cat_info, item.gamerscore);
+                if (item.progress_total > 0) {
+                  row.value_text = fmt::format("{}/{}  {} G  [Locked]", item.progress_current,
+                                               item.progress_total, item.gamerscore);
+                } else {
+                  row.value_text = fmt::format("{} G  [Locked]", item.gamerscore);
+                }
+              }
+              rows.push_back(std::move(row));
+              total_rendered++;
+            }
+          }
+        }
+
+        if (total_rendered == 0) {
+          header("Achievements");
+          RowSpec row;
+          row.kind = RowSpec::kAction;
+          row.label = "No Achievements Found";
+          row.desc = "No achievements match the current filter selection.";
+          row.enabled = false;
+          rows.push_back(std::move(row));
+        }
+      }
+      header("Management");
+      {
+        const std::string selected_cat_name =
+            (achievement_category_filter_ >= 0 &&
+             achievement_category_filter_ < static_cast<int>(category_options.size()))
+                ? category_options[achievement_category_filter_]
+                : "All";
+        const char* status_filter_name =
+            (achievement_filter_ == 1) ? "Unlocked" : (achievement_filter_ == 2) ? "Locked" : "All";
+
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        if (!confirm_reset_filtered_achievements_) {
+          row.label = "Reset Achievements In Current Filter";
+          row.desc =
+              "Reset achievement progress and Gamerscore only for the achievements currently "
+              "displayed by your Category and Status filter rules.";
+        } else {
+          row.label = "CONFIRM: Reset Achievements In Current Filter?";
+          row.desc =
+              "Are you sure? Only the achievements currently displayed under the active filter "
+              "will be locked and reset. Other categories and packs will not be affected. Select "
+              "again to proceed.";
+        }
+        row.desc_extra = fmt::format("Filter: {}  •  Status: {}\nDisplayed: {} achievement(s) ({} with progress)",
+                                     selected_cat_name, status_filter_name,
+                                     filtered_ids.size(), filtered_progress_count);
+        row.value_text = fmt::format("{} Shown", filtered_ids.size());
+        row.danger = true;
+        row.enabled = (reset_filtered_achievements_ != nullptr && filtered_progress_count > 0);
+        row.action = [this, filtered_ids] {
+          confirm_reset_achievements_ = false;
+          if (!confirm_reset_filtered_achievements_) {
+            confirm_reset_filtered_achievements_ = true;
+          } else {
+            confirm_reset_filtered_achievements_ = false;
+            if (reset_filtered_achievements_) {
+              reset_filtered_achievements_(filtered_ids);
+              ReloadAchievements();
+            }
+          }
+        };
+        rows.push_back(std::move(row));
+      }
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        if (!confirm_reset_achievements_) {
+          row.label = "Reset All Achievements";
+          row.desc =
+              "Nuclear reset: lock all achievements and clear all progress and Gamerscore across "
+              "every category and mod pack for this profile.";
+        } else {
+          row.label = "CONFIRM: Reset All Achievements?";
+          row.desc =
+              "Are you sure? This will lock ALL achievements across all categories and packs and "
+              "reset Gamerscore to 0. Select again to proceed.";
+        }
+        row.danger = true;
+        row.enabled = (reset_achievements_ != nullptr && total_progress_count > 0);
+        row.action = [this] {
+          confirm_reset_filtered_achievements_ = false;
+          if (!confirm_reset_achievements_) {
+            confirm_reset_achievements_ = true;
+          } else {
+            confirm_reset_achievements_ = false;
+            if (reset_achievements_) {
+              reset_achievements_();
+              ReloadAchievements();
+            }
+          }
+        };
+        rows.push_back(std::move(row));
+      }
+      break;
+    }
+    case 4: {  // Mods
       if (!player_model_mod_indices_.empty()) {
         header("Player Character");
         RowSpec row;
@@ -2216,7 +2595,250 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
       }
       break;
     }
-    case 4: {  // Profile
+    case 5: {  // Cheats
+      header("Gameplay");
+      if (HasCvar("skate3_cheat_no_bails")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Bails";
+        row.desc =
+            "Toggle all skater wipeouts and bails on or off. Takes effect immediately.";
+        // Note: flag=false means Bails On (normal), flag=true means No Bails (Off).
+        row.options = {"On (Normal)", "Off (No Bails)"};
+        row.flag = &cheat_no_bails_;
+        row.on_enum_change = [this](int value) {
+          SetBoolCvar("skate3_cheat_no_bails", value != 0);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_no_bails_ = CvarDefaultBool("skate3_cheat_no_bails", false);
+          SetBoolCvar("skate3_cheat_no_bails", cheat_no_bails_);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_drop_height")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Drop Height Bail Threshold";
+        row.desc =
+            "Scale how far you can drop or ollie/jump down (on-board or off-board) "
+            "without bailing on landing, while keeping normal wall and car crash bails.";
+        for (const char* label : kCheatDropHeightLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_drop_height_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatDropHeightLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_drop_height", kCheatDropHeightLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_drop_height_index_ = 0;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_drop_height",
+                                   kCheatDropHeightLabels[cheat_drop_height_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_freeze_timer")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Challenge Timer Freeze";
+        row.desc =
+            "Freeze active challenge and callout countdown timers so they never run out.";
+        row.options = {"Off", "Frozen"};
+        row.flag = &cheat_freeze_timer_;
+        row.on_enum_change = [this](int value) {
+          SetBoolCvar("skate3_cheat_freeze_timer", value != 0);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_freeze_timer_ = CvarDefaultBool("skate3_cheat_freeze_timer", false);
+          SetBoolCvar("skate3_cheat_freeze_timer", cheat_freeze_timer_);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      header("Physics & Movement");
+      if (HasCvar("skate3_cheat_gravity")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Gravity";
+        row.desc =
+            "Scale skater and board gravity in the air and on slopes. Takes effect immediately.";
+        for (const char* label : kCheatGravityLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_gravity_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatGravityLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_gravity", kCheatGravityLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_gravity_index_ = 2;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_gravity",
+                                   kCheatGravityLabels[cheat_gravity_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_pop_height")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "On-Board Pop Height";
+        row.desc =
+            "Multiply ollie and nollie pop height while on the skateboard. Takes effect immediately.";
+        for (const char* label : kCheatPopHeightLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_pop_height_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatPopHeightLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_pop_height", kCheatPopHeightLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_pop_height_index_ = 0;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_pop_height",
+                                   kCheatPopHeightLabels[cheat_pop_height_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_offboard_jump_height")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Off-Board Jump Height";
+        row.desc =
+            "Multiply jump apex height while off the skateboard, completely independent of Gravity.";
+        for (const char* label : kCheatPopHeightLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_offboard_jump_height_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatPopHeightLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_jump_height",
+                                   kCheatPopHeightLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_offboard_jump_height_index_ = 0;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_jump_height",
+                                   kCheatPopHeightLabels[cheat_offboard_jump_height_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_offboard_jump_speed")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Off-Board Jump Speed";
+        row.desc =
+            "Scale horizontal forward speed when jumping off-board, independent of Gravity and walking speed.";
+        for (const char* label : kCheatSpeedLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_offboard_jump_speed_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatSpeedLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_jump_speed", kCheatSpeedLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_offboard_jump_speed_index_ = 1;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_jump_speed",
+                                   kCheatSpeedLabels[cheat_offboard_jump_speed_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_onboard_speed")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "On-Board Speed";
+        row.desc =
+            "Scale pushing, pumping, and rolling acceleration while on the skateboard.";
+        for (const char* label : kCheatSpeedLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_onboard_speed_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatSpeedLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_onboard_speed", kCheatSpeedLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_onboard_speed_index_ = 1;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_onboard_speed",
+                                   kCheatSpeedLabels[cheat_onboard_speed_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      if (HasCvar("skate3_cheat_offboard_speed")) {
+        RowSpec row;
+        row.kind = RowSpec::kEnum;
+        row.label = "Off-Board Speed";
+        row.desc =
+            "Scale walking, jogging, and sprinting speed while off the skateboard.";
+        for (const char* label : kCheatSpeedLabels) {
+          row.options.push_back(label);
+        }
+        row.index = &cheat_offboard_speed_index_;
+        row.on_enum_change = [this](int idx) {
+          idx = std::clamp(idx, 0, static_cast<int>(kCheatSpeedLabels.size()) - 1);
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_speed", kCheatSpeedLabels[idx]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        row.reset = [this] {
+          cheat_offboard_speed_index_ = 1;  // Normal
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_speed",
+                                   kCheatSpeedLabels[cheat_offboard_speed_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      header("Reset");
+      {
+        RowSpec row;
+        row.kind = RowSpec::kAction;
+        row.label = "Reset All Cheats";
+        row.desc = "Restore all cheats to their default (normal gameplay) values.";
+        row.action = [this] {
+          cheat_no_bails_ = false;
+          cheat_drop_height_index_ = 0;
+          cheat_freeze_timer_ = false;
+          cheat_gravity_index_ = 2;
+          cheat_pop_height_index_ = 0;
+          cheat_offboard_jump_height_index_ = 0;
+          cheat_offboard_jump_speed_index_ = 1;
+          cheat_onboard_speed_index_ = 1;
+          cheat_offboard_speed_index_ = 1;
+          SetBoolCvar("skate3_cheat_no_bails", false);
+          rex::cvar::SetFlagByName("skate3_cheat_drop_height",
+                                   kCheatDropHeightLabels[cheat_drop_height_index_]);
+          SetBoolCvar("skate3_cheat_freeze_timer", false);
+          rex::cvar::SetFlagByName("skate3_cheat_gravity",
+                                   kCheatGravityLabels[cheat_gravity_index_]);
+          rex::cvar::SetFlagByName("skate3_cheat_pop_height",
+                                   kCheatPopHeightLabels[cheat_pop_height_index_]);
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_jump_height",
+                                   kCheatPopHeightLabels[cheat_offboard_jump_height_index_]);
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_jump_speed",
+                                   kCheatSpeedLabels[cheat_offboard_jump_speed_index_]);
+          rex::cvar::SetFlagByName("skate3_cheat_onboard_speed",
+                                   kCheatSpeedLabels[cheat_onboard_speed_index_]);
+          rex::cvar::SetFlagByName("skate3_cheat_offboard_speed",
+                                   kCheatSpeedLabels[cheat_offboard_speed_index_]);
+          SaveSimpleSettingsConfig(config_path_);
+        };
+        rows.push_back(std::move(row));
+      }
+      break;
+    }
+    case 6: {  // Profile
       header("Local Profile");
       {
         RowSpec row;
@@ -2263,7 +2885,7 @@ void SimpleSettingsDialog::BuildRows(std::vector<RowSpec>& rows, int category) {
       }
       break;
     }
-    case 5: {  // System
+    case 7: {  // System
       if (HasCvar("user_language")) {
         RowSpec row;
         row.kind = RowSpec::kEnum;
@@ -3063,11 +3685,36 @@ void SimpleSettingsDialog::OnDraw(ImGuiIO& io) {
     ImU32 value_col = focused ? kColSelText : (row.enabled ? kColRowText : kColTextFaint);
 
     // Label.
-    AddTextVCentered(dl, row_bold, label_size, content_x + 18.0f * s, cy, label_col, row.label);
-
-    // Value area on the right side of the row.
+    float label_x = content_x + 18.0f * s;
+    if (row.icon_texture) {
+      const float thumb_sz = 26.0f * s;
+      const float thumb_y0 = cy - thumb_sz * 0.5f;
+      const float thumb_y1 = thumb_y0 + thumb_sz;
+      const ImU32 thumb_col = (!row.enabled)
+                                  ? IM_COL32(255, 255, 255, 120)
+                                  : IM_COL32(255, 255, 255, 255);
+      dl->AddImageRounded(reinterpret_cast<ImTextureID>(row.icon_texture),
+                          ImVec2(label_x, thumb_y0),
+                          ImVec2(label_x + thumb_sz, thumb_y1),
+                          ImVec2(0, 0), ImVec2(1, 1),
+                          thumb_col, 4.0f * s);
+      label_x += thumb_sz + 10.0f * s;
+    }
     float vx1 = content_x + content_w - 12.0f * s;
     float vx0 = content_x + content_w - value_w;
+
+    if (row.kind == RowSpec::kAction && !row.value_text.empty()) {
+      const ImVec2 val_ext = row_bold->CalcTextSizeA(value_size, FLT_MAX, 0.0f, row.value_text.c_str());
+      float right_limit = Snap(vx1 - val_ext.x) - 14.0f * s;
+      if (row.progress_total > 0) {
+        right_limit -= (64.0f + 16.0f) * s;
+      }
+      const float max_label_w = std::max(40.0f * s, right_limit - label_x);
+      const std::string fit_label = TruncateToWidth(row_bold, label_size, max_label_w, row.label);
+      AddTextVCentered(dl, row_bold, label_size, label_x, cy, label_col, fit_label.c_str());
+    } else {
+      AddTextVCentered(dl, row_bold, label_size, label_x, cy, label_col, row.label);
+    }
 
     switch (row.kind) {
       case RowSpec::kEnum: {
@@ -3179,6 +3826,38 @@ void SimpleSettingsDialog::OnDraw(ImGuiIO& io) {
         break;
       }
       case RowSpec::kAction: {
+        if (!row.value_text.empty()) {
+          ImU32 text_col = value_col;
+          if (row.value_text.find("[Unlocked]") != std::string::npos) {
+            text_col = focused ? kColAccent : IM_COL32(60, 140, 25, 255);
+          } else if (row.value_text.find("[Locked]") != std::string::npos) {
+            text_col = focused ? IM_COL32(180, 180, 180, 200) : kColTextFaint;
+          }
+          ImVec2 extent = row_bold->CalcTextSizeA(value_size, FLT_MAX, 0.0f, row.value_text.c_str());
+          const float text_x0 = Snap(vx1 - extent.x);
+          dl->AddText(row_bold, value_size, ImVec2(text_x0, Snap(cy - extent.y * 0.5f)),
+                      text_col, row.value_text.c_str());
+
+          if (row.progress_total > 0) {
+            const float bar_w = 64.0f * s;
+            const float bar_h = 6.0f * s;
+            const float bar_x1 = Snap(text_x0 - 16.0f * s);
+            const float bar_x0 = Snap(bar_x1 - bar_w);
+            const float bar_y0 = Snap(cy - bar_h * 0.5f);
+            const float bar_y1 = bar_y0 + bar_h;
+            const float frac = std::clamp(
+                static_cast<float>(row.progress_current) / static_cast<float>(row.progress_total),
+                0.0f, 1.0f);
+            const ImU32 track_col = focused ? IM_COL32(255, 255, 255, 55) : IM_COL32(0, 0, 0, 65);
+            const ImU32 fill_col = focused ? kColAccent : IM_COL32(95, 175, 20, 255);
+            dl->AddRectFilled(ImVec2(bar_x0, bar_y0), ImVec2(bar_x1, bar_y1), track_col, 3.0f * s);
+            if (frac > 0.0f) {
+              dl->AddRectFilled(ImVec2(bar_x0, bar_y0),
+                                ImVec2(bar_x0 + std::max(bar_h, bar_w * frac), bar_y1),
+                                fill_col, 3.0f * s);
+            }
+          }
+        }
         // No right-side 'Select' / '-' hint: the footer legend covers
         // activation, and disabled rows read from their dim label alone.
         if (clicked && hovered && row.enabled && !row_activated_this_frame) {
@@ -3262,7 +3941,32 @@ void SimpleSettingsDialog::OnDraw(ImGuiIO& io) {
 
   // ---- Description panel ----
   {
-    const float panel_h = desc_panel_h;
+    const char* desc_text = kCategories[category_].desc;
+    if (zone_ == FocusZone::kRail && rail_sel_ == quit_rail_index) {
+      desc_text = "Quit to the desktop. Unsaved game progress is lost.";
+    }
+    const char* note_text = nullptr;
+    const std::string* extra_text = nullptr;
+    const RowSpec* focused_row = nullptr;
+    if (zone_ == FocusZone::kContent && row_index_ >= 0 &&
+        row_index_ < static_cast<int>(rows.size())) {
+      focused_row = &rows[row_index_];
+      if (focused_row->desc) {
+        desc_text = focused_row->desc;
+      }
+      note_text = focused_row->value_note;
+      if (!focused_row->desc_extra.empty()) {
+        extra_text = &focused_row->desc_extra;
+      }
+    }
+
+    float panel_h = desc_panel_h;
+    if (focused_row && (!focused_row->checklist.empty() || focused_row->progress_total > 0)) {
+      const size_t grid_rows = (focused_row->checklist.size() + 1) / 2;
+      const float needed_h = 315.0f * s + static_cast<float>(grid_rows) * 19.5f * s;
+      panel_h = std::max(panel_h, std::min(needed_h, content_view_bottom - columns_y));
+    }
+
     const float header_bar_h = row_h;  // header bar matches a settings row
     dl->AddRectFilled(ImVec2(desc_x, columns_y), ImVec2(desc_x + desc_w, columns_y + header_bar_h),
                       kColAccent, 0.0f);
@@ -3273,35 +3977,121 @@ void SimpleSettingsDialog::OnDraw(ImGuiIO& io) {
     dl->AddRect(ImVec2(desc_x, columns_y), ImVec2(desc_x + desc_w, columns_y + panel_h),
                 kColRailBorder, 0.0f);
 
-    const char* desc_text = kCategories[category_].desc;
-    if (zone_ == FocusZone::kRail && rail_sel_ == quit_rail_index) {
-      desc_text = "Quit to the desktop. Unsaved game progress is lost.";
-    }
-    const char* note_text = nullptr;
-    const std::string* extra_text = nullptr;
-    if (zone_ == FocusZone::kContent && row_index_ >= 0 &&
-        row_index_ < static_cast<int>(rows.size())) {
-      const RowSpec& row = rows[row_index_];
-      if (row.desc) {
-        desc_text = row.desc;
-      }
-      note_text = row.value_note;
-      if (!row.desc_extra.empty()) {
-        extra_text = &row.desc_extra;
-      }
-    }
     float text_x = Snap(desc_x + 14.0f * s);
     float text_y = Snap(columns_y + header_bar_h + 14.0f * s);
     float wrap_w = desc_w - 28.0f * s;
+
+    if (focused_row && focused_row->icon_texture) {
+      const float icon_w = 64.0f * s;
+      const float icon_h = 64.0f * s;
+      const float icon_x0 = text_x;
+      const float icon_y0 = text_y;
+      const float icon_x1 = icon_x0 + icon_w;
+      const float icon_y1 = icon_y0 + icon_h;
+
+      dl->AddImageRounded(reinterpret_cast<ImTextureID>(focused_row->icon_texture),
+                          ImVec2(icon_x0, icon_y0), ImVec2(icon_x1, icon_y1),
+                          ImVec2(0, 0), ImVec2(1, 1),
+                          IM_COL32(255, 255, 255, 255), 6.0f * s);
+      dl->AddRect(ImVec2(icon_x0, icon_y0), ImVec2(icon_x1, icon_y1),
+                  kColRailBorder, 6.0f * s, 0, 1.5f * s);
+
+      const float side_x = icon_x1 + 14.0f * s;
+      const float side_w = wrap_w - icon_w - 14.0f * s;
+      float side_y = icon_y0 + 2.0f * s;
+
+      side_y = Snap(side_y +
+                    AddTextJustified(dl, bold, label_size, ImVec2(side_x, side_y), side_w,
+                                     kColWhite, focused_row->label) +
+                    6.0f * s);
+
+      if (!focused_row->value_text.empty()) {
+        side_y = Snap(side_y +
+                      AddTextJustified(dl, bold_ol, desc_size, ImVec2(side_x, side_y), side_w,
+                                       kColAccent, focused_row->value_text.c_str()) +
+                      4.0f * s);
+      }
+
+      text_y = Snap(std::max(icon_y1, side_y) + 14.0f * s);
+    }
+
     text_y = Snap(text_y +
                   AddTextJustified(dl, font, desc_size, ImVec2(text_x, text_y), wrap_w,
                                    kColText, desc_text) +
-                  10.0f * s);
+                  12.0f * s);
     if (extra_text) {
       text_y = Snap(text_y +
                     AddTextJustified(dl, font, desc_size, ImVec2(text_x, text_y), wrap_w,
                                      kColTextDim, extra_text->c_str()) +
-                    10.0f * s);
+                    16.0f * s);
+    } else if (focused_row && focused_row->progress_total > 0) {
+      text_y = Snap(text_y + 6.0f * s);
+    }
+    if (focused_row && focused_row->progress_total > 0) {
+      const float frac = std::clamp(
+          static_cast<float>(focused_row->progress_current) /
+              static_cast<float>(focused_row->progress_total),
+          0.0f, 1.0f);
+      const int pct = static_cast<int>(std::round(frac * 100.0f));
+      const std::string prog_str = fmt::format("Progress: {} / {} ({}%)",
+                                               focused_row->progress_current,
+                                               focused_row->progress_total, pct);
+      const float prog_font_sz = font_px(15.0f * s);
+      const ImVec2 prog_ext = bold->CalcTextSizeA(prog_font_sz, FLT_MAX, 0.0f, prog_str.c_str());
+      dl->AddText(bold, prog_font_sz, ImVec2(text_x, text_y), kColWhite, prog_str.c_str());
+      text_y = Snap(text_y + std::max(prog_font_sz, prog_ext.y) + 9.0f * s);
+
+      const float bar_h = 8.0f * s;
+      const float bar_y0 = text_y;
+      const float bar_y1 = bar_y0 + bar_h;
+      dl->AddRectFilled(ImVec2(text_x, bar_y0), ImVec2(text_x + wrap_w, bar_y1),
+                        IM_COL32(255, 255, 255, 35), 4.0f * s);
+      if (frac > 0.0f) {
+        dl->AddRectFilled(ImVec2(text_x, bar_y0),
+                          ImVec2(text_x + std::max(bar_h, wrap_w * frac), bar_y1),
+                          kColAccent, 4.0f * s);
+      }
+      text_y = Snap(bar_y1 + 12.0f * s);
+    }
+    if (focused_row && !focused_row->checklist.empty()) {
+      const float col_w = wrap_w * 0.5f;
+      const float row_step = 18.5f * s;
+      const float chk_sz = 10.0f * s;
+      const float item_font_sz = font_px(14.0f * s);
+      const size_t n = focused_row->checklist.size();
+      for (size_t idx = 0; idx < n; ++idx) {
+        const size_t col = idx % 2;
+        const size_t r = idx / 2;
+        const float cx = Snap(text_x + static_cast<float>(col) * col_w);
+        const float cy_row = Snap(text_y + static_cast<float>(r) * row_step);
+        if (cy_row + row_step > columns_y + panel_h - 6.0f * s) {
+          break;
+        }
+        const auto& [trick_label, done] = focused_row->checklist[idx];
+        const float box_y0 = Snap(cy_row + (item_font_sz - chk_sz) * 0.5f);
+        const float box_y1 = box_y0 + chk_sz;
+        if (done) {
+          dl->AddRectFilled(ImVec2(cx, box_y0), ImVec2(cx + chk_sz, box_y1), kColAccent, 2.0f * s);
+          // Crisp checkmark inside the box
+          dl->AddLine(ImVec2(cx + 2.0f * s, box_y0 + chk_sz * 0.55f),
+                      ImVec2(cx + chk_sz * 0.45f, box_y1 - 2.0f * s),
+                      kColAccentDark, 1.8f * s);
+          dl->AddLine(ImVec2(cx + chk_sz * 0.45f, box_y1 - 2.0f * s),
+                      ImVec2(cx + chk_sz - 1.8f * s, box_y0 + 2.0f * s),
+                      kColAccentDark, 1.8f * s);
+        } else {
+          dl->AddRect(ImVec2(cx, box_y0), ImVec2(cx + chk_sz, box_y1),
+                      IM_COL32(255, 255, 255, 95), 2.0f * s, 0, 1.2f * s);
+        }
+        const std::string fit_label =
+            TruncateToWidth(done ? bold : font, item_font_sz, col_w - chk_sz - 10.0f * s,
+                            trick_label);
+        dl->AddText(done ? bold : font, item_font_sz,
+                    ImVec2(Snap(cx + chk_sz + 6.0f * s), cy_row),
+                    done ? kColWhite : kColTextDim, fit_label.c_str());
+      }
+      const size_t total_rows = (n + 1) / 2;
+      text_y = Snap(text_y + static_cast<float>(total_rows) * row_step + 8.0f * s);
     }
     if (note_text) {
       text_y = Snap(text_y +

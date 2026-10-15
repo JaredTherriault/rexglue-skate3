@@ -19,7 +19,9 @@ namespace rex {
 namespace ui {
 
 ImGuiDialog::ImGuiDialog(ImGuiDrawer* imgui_drawer) : imgui_drawer_(imgui_drawer) {
-  imgui_drawer_->AddDialog(this);
+  if (imgui_drawer_) {
+    imgui_drawer_->AddDialog(this);
+  }
 }
 
 ImGuiDialog::~ImGuiDialog() {
@@ -46,6 +48,9 @@ void ImGuiDialog::SetDrawActive(bool active) {
     return;
   }
   is_draw_active_ = active;
+  if (!imgui_drawer_) {
+    return;
+  }
   if (active) {
     imgui_drawer_->AddDialog(this);
   } else {

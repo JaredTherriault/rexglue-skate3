@@ -62,6 +62,7 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   void RemoveDialog(ImGuiDialog* dialog);
 
   Presenter* presenter() const { return presenter_; }
+  ImmediateDrawer* immediate_drawer() const { return immediate_drawer_; }
 
   // SetPresenter may be called from the destructor.
   void SetPresenter(Presenter* new_presenter);
