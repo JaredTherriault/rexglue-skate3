@@ -290,6 +290,45 @@ class KernelState {
   void UnregisterNotifyListener(XNotifyListener* listener);
   void BroadcastNotification(XNotificationID id, uint32_t data);
 
+  using AchievementUnlockCallback = std::function<void(uint32_t user_index, uint32_t achievement_id)>;
+  using ShowAchievementsUICallback = std::function<void(uint32_t user_index, uint32_t title_id)>;
+  using IsAchievementUnlockedCallback = std::function<bool(uint32_t user_index, uint32_t achievement_id)>;
+
+  void SetAchievementUnlockCallback(AchievementUnlockCallback callback) {
+    achievement_unlock_callback_ = std::move(callback);
+  }
+  const AchievementUnlockCallback& achievement_unlock_callback() const {
+    return achievement_unlock_callback_;
+  }
+  void NotifyAchievementUnlocked(uint32_t user_index, uint32_t achievement_id) {
+    if (achievement_unlock_callback_) {
+      achievement_unlock_callback_(user_index, achievement_id);
+    }
+    BroadcastNotification(0x0000002A, achievement_id);
+  }
+
+  void SetShowAchievementsUICallback(ShowAchievementsUICallback callback) {
+    show_achievements_ui_callback_ = std::move(callback);
+  }
+  const ShowAchievementsUICallback& show_achievements_ui_callback() const {
+    return show_achievements_ui_callback_;
+  }
+  void NotifyShowAchievementsUI(uint32_t user_index, uint32_t title_id) {
+    if (show_achievements_ui_callback_) {
+      show_achievements_ui_callback_(user_index, title_id);
+    }
+  }
+
+  void SetIsAchievementUnlockedCallback(IsAchievementUnlockedCallback callback) {
+    is_achievement_unlocked_callback_ = std::move(callback);
+  }
+  bool IsAchievementUnlocked(uint32_t user_index, uint32_t achievement_id) const {
+    if (is_achievement_unlocked_callback_) {
+      return is_achievement_unlocked_callback_(user_index, achievement_id);
+    }
+    return false;
+  }
+
   void SetUserContext(uint32_t user_index, uint32_t context_id, uint32_t value);
   std::optional<uint32_t> GetUserContext(uint32_t user_index, uint32_t context_id) const;
 
@@ -381,6 +420,10 @@ class KernelState {
   util::NativeList dpc_list_;
   std::condition_variable_any dispatch_cond_;
   std::list<std::move_only_function<void()>> dispatch_queue_;
+
+  AchievementUnlockCallback achievement_unlock_callback_;
+  ShowAchievementsUICallback show_achievements_ui_callback_;
+  IsAchievementUnlockedCallback is_achievement_unlocked_callback_;
 
   friend class XObject;
 };

@@ -98,6 +98,16 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       uint32_t achievements_ptr = memory::load_and_swap<uint32_t>(buffer + 4);
       REXKRNL_DEBUG("XGIUserWriteAchievements({:08X}, {:08X})", achievement_count,
                     achievements_ptr);
+      uint8_t* achievements_base = memory_->TranslateVirtual(achievements_ptr);
+      if (achievements_base) {
+        for (uint32_t i = 0; i < achievement_count; ++i) {
+          uint32_t user_index = memory::load_and_swap<uint32_t>(achievements_base + i * 8 + 0);
+          uint32_t achievement_id = memory::load_and_swap<uint32_t>(achievements_base + i * 8 + 4);
+          REXKRNL_INFO("XGIUserWriteAchievements: user={}, achievement={}", user_index,
+                       achievement_id);
+          kernel_state_->NotifyAchievementUnlocked(user_index, achievement_id);
+        }
+      }
       return X_E_SUCCESS;
     }
     case 0x000B0010: {

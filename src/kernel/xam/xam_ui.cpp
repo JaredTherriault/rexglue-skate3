@@ -566,6 +566,26 @@ uint32_t XamShowMessageBoxUIEx_entry() {
   return 0;
 }
 
+u32 XamShowAchievementsUI_entry(u32 user_index, u32 title_id) {
+  REXKRNL_INFO("XamShowAchievementsUI(user={}, title={:08X})", uint32_t(user_index), uint32_t(title_id));
+  REX_KERNEL_STATE()->NotifyShowAchievementsUI(user_index, title_id);
+  return X_ERROR_SUCCESS;
+}
+
+u32 XamShowAchievementDetailsUI_entry(u32 user_index, u32 title_id, u32 achievement_id) {
+  REXKRNL_INFO("XamShowAchievementDetailsUI(user={}, title={:08X}, achievement={})",
+               uint32_t(user_index), uint32_t(title_id), uint32_t(achievement_id));
+  REX_KERNEL_STATE()->NotifyShowAchievementsUI(user_index, title_id);
+  return X_ERROR_SUCCESS;
+}
+
+u32 XamShowAchievementsUIEx_entry(u32 user_index, u32 title_id, u32 flags) {
+  REXKRNL_INFO("XamShowAchievementsUIEx(user={}, title={:08X}, flags={:08X})",
+               uint32_t(user_index), uint32_t(title_id), uint32_t(flags));
+  REX_KERNEL_STATE()->NotifyShowAchievementsUI(user_index, title_id);
+  return X_ERROR_SUCCESS;
+}
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace rex
@@ -578,6 +598,9 @@ REX_EXPORT(__imp__XamShowDirtyDiscErrorUI, rex::kernel::xam::XamShowDirtyDiscErr
 REX_EXPORT(__imp__XamShowPartyUI, rex::kernel::xam::XamShowPartyUI_entry)
 REX_EXPORT(__imp__XamShowCommunitySessionsUI, rex::kernel::xam::XamShowCommunitySessionsUI_entry)
 REX_EXPORT(__imp__XamShowMessageBoxUIEx, rex::kernel::xam::XamShowMessageBoxUIEx_entry)
+REX_EXPORT(__imp__XamShowAchievementDetailsUI, rex::kernel::xam::XamShowAchievementDetailsUI_entry)
+REX_EXPORT(__imp__XamShowAchievementsUI, rex::kernel::xam::XamShowAchievementsUI_entry)
+REX_EXPORT(__imp__XamShowAchievementsUIEx, rex::kernel::xam::XamShowAchievementsUIEx_entry)
 
 REX_EXPORT_STUB(__imp__XamIsGuideDisabled);
 REX_EXPORT_STUB(__imp__XamIsMessageBoxActive);
@@ -588,9 +611,6 @@ REX_EXPORT_STUB(__imp__XamIsUIThread);
 REX_EXPORT_STUB(__imp__XamNavigate);
 REX_EXPORT_STUB(__imp__XamNavigateBack);
 REX_EXPORT_STUB(__imp__XamOverrideHudOpenType);
-REX_EXPORT_STUB(__imp__XamShowAchievementDetailsUI);
-REX_EXPORT_STUB(__imp__XamShowAchievementsUI);
-REX_EXPORT_STUB(__imp__XamShowAchievementsUIEx);
 REX_EXPORT_STUB(__imp__XamShowAndWaitForMessageBoxEx);
 REX_EXPORT_STUB(__imp__XamShowAvatarAwardGamesUI);
 REX_EXPORT_STUB(__imp__XamShowAvatarAwardsUI);

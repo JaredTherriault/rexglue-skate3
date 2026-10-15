@@ -694,6 +694,13 @@ u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 x
     const std::vector<util::XdbfAchievementTableEntry> achievement_list = db.GetAchievements();
 
     for (const util::XdbfAchievementTableEntry& entry : achievement_list) {
+      uint32_t flags = entry.flags;
+      uint32_t unlock_time_0 = 0;
+      uint32_t unlock_time_4 = 0;
+      if (REX_KERNEL_STATE()->IsAchievementUnlocked(user_index, entry.id)) {
+        flags |= 0x00020001;
+        unlock_time_0 = 1;
+      }
       auto item = XStaticAchievementEnumerator::AchievementDetails{
           entry.id,
           rex::string::to_utf16(db.GetStringTableEntry(language, entry.label_id)),
@@ -701,8 +708,8 @@ u32 XamUserCreateAchievementEnumerator_entry(u32 title_id, u32 user_index, u32 x
           rex::string::to_utf16(db.GetStringTableEntry(language, entry.unachieved_id)),
           entry.image_id,
           entry.gamerscore,
-          {0, 0},
-          entry.flags};
+          {unlock_time_0, unlock_time_4},
+          flags};
 
       e->AppendItem(item);
     }
