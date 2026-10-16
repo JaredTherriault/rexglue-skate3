@@ -177,6 +177,10 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
       continue;
     }
 
+    if (file_info.name == kGameContentHeaderDirName) {
+      continue;
+    }
+
     XCONTENT_AGGREGATE_DATA content_data;
     if (XSUCCEEDED(ReadContentHeaderFile(rex::path_to_utf8(file_info.name), xuid, title_id,
                                          content_type, content_data))) {
